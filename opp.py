@@ -1,129 +1,152 @@
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import urllib.parse
-import os
+import base64
+from io import BytesIO
+from PIL import Image
+import ast
 
-st.set_page_config(page_title="Boutique Master Cloud", page_icon="✂️", layout="wide")
+st.set_page_config(page_title="Boutique Master Pro", page_icon="✂️", layout="wide")
 
-# --- 1. SETUP & CONNECTION ---
+# --- 1. CLOUD CONNECTION ---
 conn = st.connection("gsheets", type=GSheetsConnection)
-IMAGE_DIR = "reference_images" 
-if not os.path.exists(IMAGE_DIR):
-    os.makedirs(IMAGE_DIR)
 
 def load_data():
     try:
-        # Pulls data from Google Sheets
         return conn.read(ttl="0s") 
     except:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=["Order_Date", "Name", "Phone", "Type", "Amount", "Status", "Delivery_Date", "Measurements", "Notes", "Image_Data"])
 
 df = load_data()
 
-# --- 2. SIDEBAR: BRANDING & GST ---
-st.sidebar.header("🏢 Boutique Branding")
-shop_name = st.sidebar.text_input("Boutique Name", "My Designer Boutique")
-shop_address = st.sidebar.text_area("Shop Address", "123 Fashion Street")
-gst_info = st.sidebar.text_input("GST Number", "22AAAAA0000A1Z5")
-shop_logo = st.sidebar.file_uploader("Upload Logo", type=['png', 'jpg', 'jpeg'])
+# --- 2. PERMANENT BOUTIQUE INFO ---
+SHOP_NAME = st.secrets.get("SHOP_NAME", "SHEEJA'S DESIGNS")
+SHOP_ADDRESS = st.secrets.get("SHOP_ADDRESS", "Your Address")
+SHOP_GST = st.secrets.get("SHOP_GST", "29AAAAA0000A1Z5")
 
-menu = ["➕ New Order", "📜 History & Tracker", "📥 Download Data"]
+st.sidebar.title(f"🏢 {SHOP_NAME}")
+st.sidebar.info(f"📍 {SHOP_ADDRESS}\n\n🆔 GST: {SHOP_GST}")
+
+menu = ["➕ New Order", "📊 Business Analysis", "📜 History & Tracker", "📥 Download Data"]
 choice = st.sidebar.radio("Navigation", menu)
 
-if choice == "➕ New Order":
-    order_type = st.selectbox("Select Dress Type", ["Chudidhar", "Blouse", "Gents"])
+# --- HELPER: CONVERT IMAGE TO TEXT ---
+def img_to_base64(uploaded_file):
+    if uploaded_file is not None:
+        img = Image.open(uploaded_file)
+        img = img.convert("RGB")
+        img.thumbnail((400, 400)) # Resize to keep Google Sheet fast
+        buffered = BytesIO()
+        img.save(buffered, format="JPEG", quality=70)
+        return base64.b64encode(buffered.getvalue()).decode()
+    return ""
+
+# --- 3. BUSINESS ANALYSIS ---
+if choice == "📊 Business Analysis":
+    st.header("📈 Monthly Order Analysis")
+    if not df.empty:
+        df['Order_Date'] = pd.to_datetime(df['Order_Date'])
+        df['Month'] = df['Order_Date'].dt.strftime('%b %Y')
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total Orders", len(df))
+        c2.metric("Pending ⏳", len(df[df['Status'] != 'Delivered']))
+        c3.metric("Delivered ✅", len(df[df['Status'] == 'Delivered']))
+        st.bar_chart(df.groupby('Month').size())
+
+# --- 4. NEW ORDER (Professional Phrasing & Auto-Fill) ---
+elif choice == "➕ New Order":
+    st.subheader("📝 Customer Order Entry")
+    
+    existing_names = df['Name'].unique().tolist() if not df.empty else []
+    selected_name = st.selectbox("Search Existing Client Database", [""] + existing_names)
+    new_client_name = st.text_input("New Client Registration")
+    final_name = new_client_name if new_client_name else selected_name
+    
+    prev_phone, prev_m = "", {}
+    if final_name and not df.empty:
+        cust_match = df[df['Name'] == final_name].iloc[-1:]
+        if not cust_match.empty:
+            prev_phone = cust_match['Phone'].values[0]
+            try: prev_m = ast.literal_eval(cust_match['Measurements'].values[0])
+            except: prev_m = {}
+
+    order_type = st.selectbox("Select Garment Category", ["Chudidhar", "Blouse", "Gents"])
     
     with st.form("main_form", clear_on_submit=True):
+        d_col1, d_col2 = st.columns(2)
+        order_placed_date = d_col1.date_input("Order Date (Placement)", date.today())
+        delivery_target_date = d_col2.date_input("Target Delivery Date", date.today() + timedelta(days=7))
+
         c1, c2 = st.columns(2)
-        name = c1.text_input("Customer Name*")
-        phone = c2.text_input("WhatsApp Number (Include 91)")
-        amount = st.number_input("Stitching Fee (₹)", min_value=0)
-        status = st.selectbox("Status", ["Pending", "Ready", "Delivered"])
+        phone = c1.text_input("Contact Number (WhatsApp)", value=prev_phone)
+        amount = c2.number_input("Stitching Charges (₹)", min_value=0)
 
         st.markdown("---")
+        m = {} 
         col_l, col_r = st.columns(2)
-        m = {} # Dictionary to capture all specific measurement headers
+        def get_v(key): return str(prev_m.get(key, ""))
 
         with col_l:
-            st.subheader(f"📏 {order_type} Upper Body")
+            st.subheader("📏 Upper Body")
             if order_type == "Chudidhar":
-                # THE 14 CHUDIDHAR MEASUREMENTS
-                m['Top Length'] = st.text_input("Top Length")
-                m['Shoulder'] = st.text_input("Shoulder")
-                m['Chest'] = st.text_input("Chest")
-                m['Waist Length'] = st.text_input("Waist Length")
-                m['Waist'] = st.text_input("Waist")
-                m['Hip Length'] = st.text_input("Hip Length")
-                m['Hip'] = st.text_input("Hip")
+                for k in ["Top Len", "Shoulder", "Chest", "Waist Len", "Waist", "Hip Len", "Hip"]:
+                    m[k] = st.text_input(k, value=get_v(k))
             elif order_type == "Blouse":
-                # THE 10 BLOUSE MEASUREMENTS
-                m['Length'] = st.text_input("Length")
-                m['Shoulder'] = st.text_input("Shoulder")
-                m['Chest'] = st.text_input("Chest")
-                m['Front Neck'] = st.text_input("Front Neck")
-                m['Back Neck'] = st.text_input("Back Neck")
+                for k in ["Length", "Shoulder", "Chest", "F-Neck", "B-Neck"]:
+                    m[k] = st.text_input(k, value=get_v(k))
             elif order_type == "Gents":
-                m['Shirt Length'] = st.text_input("Shirt Length")
-                m['G_Shoulder'] = st.text_input("Shoulder")
-                m['G_Chest'] = st.text_input("Chest")
-
+                for k in ["Shirt Len", "Shoulder", "Chest", "Collar"]:
+                    m[k] = st.text_input(k, value=get_v(k))
+        
         with col_r:
-            st.subheader(f"✂️ {order_type} Sleeves & Lower")
+            st.subheader("✂️ Sleeves & Lower")
             if order_type == "Chudidhar":
-                m['F_Neck'] = st.text_input("Front Neck (C)")
-                m['B_Neck'] = st.text_input("Back Neck (C)")
-                m['S_Length'] = st.text_input("Sleeve Length")
-                m['S_Open'] = st.text_input("Sleeve Open")
-                m['Bot_Length'] = st.text_input("Bottom Length")
-                m['Bot_Open'] = st.text_input("Bottom Open")
-                m['Bot_Hip'] = st.text_input("Bottom Hip")
+                for k in ["F-Neck (C)", "B-Neck (C)", "S-Len", "S-Open", "Bot-Len", "Bot-Open", "Bot-Hip"]:
+                    m[k] = st.text_input(k, value=get_v(k))
             elif order_type == "Blouse":
-                m['Point Centre'] = st.text_input("Point Centre")
-                m['S_Length'] = st.text_input("Sleeve Length")
-                m['S_Open'] = st.text_input("Sleeve Open")
-                m['Upper Arm'] = st.text_input("Upper Arm")
-                m['Hip Loose'] = st.text_input("Hip Loose")
+                for k in ["Point Centre", "S-Len", "S-Open", "Upper Arm", "Hip Loose"]:
+                    m[k] = st.text_input(k, value=get_v(k))
             elif order_type == "Gents":
-                m['Tr_Length'] = st.text_input("Trouser Length")
-                m['Tr_Waist'] = st.text_input("Waist (Trouser)")
-                m['Thigh'] = st.text_input("Thigh")
-                m['Knee'] = st.text_input("Knee")
-                m['Ankle'] = st.text_input("Ankle")
+                for k in ["Sleeve Len", "Sleeve Open", "Trouser Len", "Waist (Tr)", "Thigh", "Ankle"]:
+                    m[k] = st.text_input(k, value=get_v(k))
 
         st.markdown("---")
-        ref_image = st.file_uploader("📸 Reference Design", type=['png', 'jpg', 'jpeg'])
-        notes = st.text_area("📝 Design Notes")
+        ref_image = st.file_uploader("📸 Reference Design (Saved Forever)", type=['png', 'jpg', 'jpeg'])
+        notes = st.text_area("📝 Customization Notes")
         
-        if st.form_submit_button("Save Order"):
-            if name and phone:
-                img_name = f"{name}_{date.today()}.jpg" if ref_image else ""
-                if ref_image:
-                    with open(os.path.join(IMAGE_DIR, img_name), "wb") as f:
-                        f.write(ref_image.getbuffer())
+        if st.form_submit_button("Confirm and Save Order"):
+            if final_name and phone:
+                encoded_image = img_to_base64(ref_image)
                 
-                # PUSHING TO CLOUD
                 new_row = pd.DataFrame([{
-                    "Date": str(date.today()), "Name": name, "Phone": phone, 
-                    "Type": order_type, "Amount": amount, "Status": status, 
-                    "Notes": notes, "Image_Name": img_name, 
-                    "Measurements": str(m) # All 14 or 10 headers saved inside here
+                    "Order_Date": str(order_placed_date), "Name": final_name, "Phone": phone, 
+                    "Type": order_type, "Amount": amount, "Status": "Pending", 
+                    "Delivery_Date": str(delivery_target_date), "Measurements": str(m), 
+                    "Notes": notes, "Image_Data": encoded_image
                 }])
-                
-                updated_df = pd.concat([df, new_row], ignore_index=True)
-                conn.update(data=updated_df)
-                st.success("✅ Order & Measurements Saved!")
+                conn.update(data=pd.concat([df, new_row], ignore_index=True))
+                st.success(f"Order recorded! Image saved permanently to Cloud.")
                 st.rerun()
 
+# --- 5. HISTORY & TRACKER ---
 elif choice == "📜 History & Tracker":
-    st.subheader("📜 Customer Ledger")
-    search = st.text_input("🔍 Search Name")
+    st.subheader("📜 Client History")
+    search = st.text_input("🔍 Filter by Client Name")
     v_df = df if not search else df[df['Name'].str.contains(search, case=False, na=False)]
     
     for i, row in v_df.iterrows():
-        with st.expander(f"👤 {row.get('Name')} - {row.get('Type')}"):
-            st.write(f"**Measurements:** {row.get('Measurements')}")
-            if row.get('Status') == "Ready":
-                msg = f"Hello {row.get('Name')}, your {row.get('Type')} is READY at {shop_name}! Amt: ₹{row.get('Amount')}"
-                st.link_button("📲 Send WhatsApp", f"https://wa.me/{row.get('Phone')}?text={urllib.parse.quote(msg)}")
+        with st.expander(f"👤 {row.get('Name')} | Ordered: {row.get('Order_Date')}"):
+            col_t, col_i = st.columns([2, 1])
+            with col_t:
+                st.write(f"**Delivery:** {row.get('Delivery_Date')} | **Fee:** ₹{row.get('Amount')}")
+                st.write(f"**Details:** {row.get('Measurements')}")
+            with col_i:
+                img_str = row.get('Image_Data')
+                if img_str:
+                    st.image(base64.b64decode(img_str), width=200)
+
+# --- 6. DOWNLOAD DATA ---
+elif choice == "📥 Download Data":
+    st.download_button("📥 Export Database (CSV)", data=df.to_csv(index=False), file_name=f"Boutique_{date.today()}.csv")
